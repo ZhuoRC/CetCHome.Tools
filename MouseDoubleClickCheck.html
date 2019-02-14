@@ -1,0 +1,31 @@
+<html> 	
+    <title>Mouse Double Click Check</title>
+  </head>
+  <body>
+<input type="button" onclick="testMouse();" value="Click">
+<p>Normal:0 DoubleClick:0 ErrorRate:0%</p>
+<div></div>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+<script>
+var i=0;
+var lastClick=0;
+var ok=0;
+var error=0;
+function testMouse(){
+	i++;
+	nowTime = Math.round(new Date().getTime());
+	clickTime = lastClick==0?0:(nowTime-lastClick);
+	lastClick = nowTime;
+	if(clickTime<120&&clickTime>0){
+		is_doubleClick = "Suspicious";
+		error++;
+	}else{
+		is_doubleClick = "Normal";
+		ok++;
+	}
+	jQuery("div").prepend("Click on the "+i+" time, time interval:"+clickTime+"ms ," +is_doubleClick+"<br/>");
+	jQuery("p").html("Normal "+ok+" time, Double click "+error+" time, Error rate:"+Math.round(error/ok*10000)/100+"%");
+}
+</script>
+  
+</body></html>
