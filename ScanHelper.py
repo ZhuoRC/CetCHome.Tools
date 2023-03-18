@@ -51,11 +51,12 @@ for file in files:
 
 	loop+=1
 
+import PyPDF2
 #merge pdf
 if AutoMergePdf:
-	from PyPDF2 import PdfFileMerger
+	from PyPDF2 import PdfMerger 
 	mergeFiles = sorted(os.listdir(targetDir),key=lambda x: int(os.path.splitext(x.split('_')[1])[0]))
-	merger = PdfFileMerger()
+	merger = PdfMerger()
 	for mFile in mergeFiles:
 		merger.append(open(targetDir+"\\"+mFile,'rb'))
 	with open(Path+"\\MergeResult-"+timestamp+".pdf","wb") as resFile:
