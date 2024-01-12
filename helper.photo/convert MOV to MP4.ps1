@@ -1,5 +1,5 @@
 ﻿
-$path = "Z:\Photo\Travel\20230807.Texas.Houston"
+$path = "C:\Clouds\Dropbox\Photo"
 $dryrun = 0
 
 Set-Location -Path $PSScriptRoot
@@ -50,7 +50,7 @@ function entGetMediaCreatedOrLastWriteTime($objFile) {
 
 
 
-Get-ChildItem -Path $path -File -Recurse | Sort-Object -Property {$_.Name} |  Where-Object {".mov",".mp4",".avi",".flv",".mkv" -eq $_.extension} | ForEach-Object {
+Get-ChildItem -Path $path -File | Sort-Object -Property {$_.Name} |  Where-Object {".mov",".mp4",".avi",".flv",".mkv" -eq $_.extension} | ForEach-Object {
 
     ## iPhone
     if (($_.Extension -eq ".MOV") -or ($_.Extension -eq ".MP4" -and $_.BaseName -NotLike "*_1080p")) {
@@ -68,8 +68,10 @@ Get-ChildItem -Path $path -File -Recurse | Sort-Object -Property {$_.Name} |  Wh
             ## 1920=1080p, 1280=720p.
             ## trunc to avoid height cannot be divisible.
             if ($dryrun -eq 0) {
-                .\ffmpeg.exe -i $inputFile -filter:v scale="1920:trunc(ow/a/2)*2" -vcodec h264 -acodec aac $outputFile -v quiet -stats
-                .\exiftool.exe -QuickTime:CreateDate="$mediaCreatedDateTimeFormat" -overwrite_original $outputFile 
+                .\bin\ffmpeg.exe -i $inputFile -filter:v scale="1920:trunc(ow/a/2)*2" -vcodec h264 -acodec aac $outputFile -v quiet -stats
+                #.\exiftool.exe -QuickTime:CreateDate="$mediaCreatedDateTimeFormat" -overwrite_original $outputFile 
+                .\bin\exiftool.exe  -overwrite_original -TagsFromFile $inputFile $outputFile 
+               
             }
         }
         #If the file already exists, show the message and do nothing.
