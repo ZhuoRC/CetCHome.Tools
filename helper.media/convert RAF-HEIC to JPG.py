@@ -9,15 +9,12 @@ import os
 import pillow_heif
 
 pathArray = [
-             r'Z:\Photo\Life.Montreal\20150919.Musee de Lachine',
-             r'Z:\Photo\Life.Montreal\20151010.Mont Tremblant',
-             r'Z:\Photo\Life.Montreal\20150920.Arboretum Morgan',
-             r'Z:\Photo\Life.Montreal\20150822.Quinn Farm']
+             r'Z:\Photo\Life.LosAngeles\!Home.4318 Cutler\H']
              
 for path in pathArray:
     print(path)
     #path = r'Z:\Photo\Life.Montreal\20151018.Part nature du Bois-de-ile-Bizard'
-    ext = 'RAF'
+    ext = 'HEIC'
     #ext = 'HEIC'
 
     FROM = pathlib.Path(path)  # Folder to read from.
