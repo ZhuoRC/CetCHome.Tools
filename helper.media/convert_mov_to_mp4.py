@@ -10,13 +10,35 @@ from tqdm import tqdm
 SOURCE_PATH = "input"          # Source folder for MOV files
 DESTINATION_PATH = "output"     # Destination folder for MP4 files
 FILE_EXTENSIONS = [".mov", ".MOV"]  # File extensions to process
-QUALITY_LEVEL = "medium"        # Quality level: high, medium, low
+QUALITY_LEVEL = "high"          # Quality level: high, medium, low
+USE_HEVC = False                # Use H.265/HEVC for better compression (slower, not all devices support)
 
-# Quality settings - optimized for speed while maintaining quality
+# Quality settings - optimized for compression with slower encoding
+# CRF: Lower = better quality (18=very high, 23=good, 28=acceptable)
+# Preset: slower = better compression (slow, medium, fast)
+# Max bitrate prevents excessive file sizes
 QUALITY_SETTINGS = {
-    'high': {'crf': '18', 'preset': 'fast', 'audio_bitrate': '192k'},
-    'medium': {'crf': '23', 'preset': 'faster', 'audio_bitrate': '128k'},
-    'low': {'crf': '28', 'preset': 'veryfast', 'audio_bitrate': '96k'}
+    'high': {
+        'crf': '18',
+        'preset': 'slow',
+        'audio_bitrate': '192k',
+        'max_video_bitrate': '8M',  # Max 8 Mbps for video
+        'bufsize': '16M'
+    },
+    'medium': {
+        'crf': '23',
+        'preset': 'slow',
+        'audio_bitrate': '128k',
+        'max_video_bitrate': '5M',  # Max 5 Mbps for video
+        'bufsize': '10M'
+    },
+    'low': {
+        'crf': '28',
+        'preset': 'medium',
+        'audio_bitrate': '96k',
+        'max_video_bitrate': '3M',  # Max 3 Mbps for video
+        'bufsize': '6M'
+    }
 }
 
 def get_ffmpeg_path():
@@ -42,6 +64,75 @@ def get_exiftool_path():
         return str(exiftool_path)
 
     return None
+
+def get_video_info(file_path):
+    """
+    Get video codec and bitrate information using ffprobe
+
+    Returns:
+        dict: Video information including codec, bitrate, audio codec, etc.
+    """
+    ffmpeg_path = get_ffmpeg_path()
+    if not ffmpeg_path:
+        return None
+
+    # Use ffprobe (comes with ffmpeg) to get detailed video info
+    ffprobe_path = str(Path(ffmpeg_path).parent / 'ffprobe.exe') if 'bin' in ffmpeg_path else 'ffprobe'
+
+    try:
+        cmd = [
+            ffprobe_path,
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            str(file_path)
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            return None
+
+        data = json.loads(result.stdout)
+
+        video_info = {
+            'video_codec': None,
+            'video_bitrate': 0,
+            'audio_codec': None,
+            'audio_bitrate': 0,
+            'duration': 0,
+            'width': 0,
+            'height': 0
+        }
+
+        # Extract video stream info
+        for stream in data.get('streams', []):
+            if stream.get('codec_type') == 'video':
+                video_info['video_codec'] = stream.get('codec_name', 'unknown')
+                video_info['width'] = stream.get('width', 0)
+                video_info['height'] = stream.get('height', 0)
+                # Get bitrate from stream or calculate from file size
+                if 'bit_rate' in stream:
+                    video_info['video_bitrate'] = int(stream['bit_rate'])
+            elif stream.get('codec_type') == 'audio':
+                video_info['audio_codec'] = stream.get('codec_name', 'unknown')
+                if 'bit_rate' in stream:
+                    video_info['audio_bitrate'] = int(stream['bit_rate'])
+
+        # Get overall bitrate from format if not found in streams
+        if 'format' in data:
+            if 'duration' in data['format']:
+                video_info['duration'] = float(data['format']['duration'])
+            if 'bit_rate' in data['format'] and video_info['video_bitrate'] == 0:
+                total_bitrate = int(data['format']['bit_rate'])
+                video_info['video_bitrate'] = total_bitrate - video_info['audio_bitrate']
+
+        return video_info
+
+    except Exception as e:
+        print(f"  [WARNING] Could not get video info: {e}")
+        return None
 
 def preserve_metadata(source_file, target_file):
     """
@@ -210,7 +301,8 @@ def convert_mov_to_mp4(input_file, output_folder):
         'original_size': 0,
         'converted_size': 0,
         'backup_created': False,
-        'metadata_comparison': None
+        'metadata_comparison': None,
+        'video_info': None
     }
 
     if not input_file.exists():
@@ -225,6 +317,16 @@ def convert_mov_to_mp4(input_file, output_folder):
     if not ffmpeg_path:
         print("Error: ffmpeg not found in bin folder or system PATH")
         return result
+
+    # Get video information first
+    print(f"Analyzing {input_file.name}...")
+    video_info = get_video_info(input_file)
+    result['video_info'] = video_info
+
+    if video_info:
+        print(f"  Source codec: {video_info['video_codec']} @ {video_info['video_bitrate'] / 1_000_000:.1f} Mbps")
+        print(f"  Audio codec: {video_info['audio_codec']} @ {video_info['audio_bitrate'] / 1000:.0f} kbps")
+        print(f"  Resolution: {video_info['width']}x{video_info['height']}")
 
     # Create backup first
     backup_path = create_backup(input_file, output_folder)
@@ -244,22 +346,94 @@ def convert_mov_to_mp4(input_file, output_folder):
     # Get quality settings
     quality_config = QUALITY_SETTINGS.get(QUALITY_LEVEL, QUALITY_SETTINGS['medium'])
 
-    # Build optimized ffmpeg command for speed
+    # Determine video encoding strategy
+    video_codec_args = []
+    should_reencode_video = True
+
+    if video_info:
+        source_codec = video_info['video_codec']
+        source_bitrate = video_info['video_bitrate']
+
+        # Determine target codec
+        if USE_HEVC:
+            target_codec = 'libx265'
+            target_codec_name = 'H.265/HEVC'
+        else:
+            target_codec = 'libx264'
+            target_codec_name = 'H.264'
+
+        # Check if we can copy the video stream (already optimal)
+        max_bitrate_bps = int(quality_config['max_video_bitrate'].rstrip('M')) * 1_000_000
+
+        if not USE_HEVC and source_codec in ['h264', 'avc1'] and source_bitrate <= max_bitrate_bps * 1.1:
+            # Source is already H.264 and within reasonable bitrate, just copy it
+            print(f"  Video: Copying stream (already H.264 at acceptable bitrate)")
+            video_codec_args = ['-c:v', 'copy']
+            should_reencode_video = False
+        else:
+            # Re-encode with target codec
+            print(f"  Video: Re-encoding to {target_codec_name} (preset: {quality_config['preset']}, CRF: {quality_config['crf']})")
+            video_codec_args = [
+                '-c:v', target_codec,
+                '-crf', quality_config['crf'],
+                '-preset', quality_config['preset'],
+                '-maxrate', quality_config['max_video_bitrate'],
+                '-bufsize', quality_config['bufsize']
+            ]
+
+            # Add x265-specific params for better compression
+            if USE_HEVC:
+                video_codec_args.extend(['-x265-params', 'log-level=error'])
+    else:
+        # No video info available, use default encoding
+        target_codec = 'libx265' if USE_HEVC else 'libx264'
+        print(f"  Video: Re-encoding to {target_codec} (no source info available)")
+        video_codec_args = [
+            '-c:v', target_codec,
+            '-crf', quality_config['crf'],
+            '-preset', quality_config['preset'],
+            '-maxrate', quality_config['max_video_bitrate'],
+            '-bufsize', quality_config['bufsize']
+        ]
+        if USE_HEVC:
+            video_codec_args.extend(['-x265-params', 'log-level=error'])
+
+    # Determine audio encoding strategy
+    audio_codec_args = []
+    if video_info and video_info['audio_codec'] in ['aac']:
+        target_audio_bitrate_bps = int(quality_config['audio_bitrate'].rstrip('k')) * 1000
+        if video_info['audio_bitrate'] <= target_audio_bitrate_bps * 1.1:
+            # Audio is already AAC at acceptable bitrate, copy it
+            print(f"  Audio: Copying stream (already AAC at acceptable bitrate)")
+            audio_codec_args = ['-c:a', 'copy']
+        else:
+            print(f"  Audio: Re-encoding to AAC @ {quality_config['audio_bitrate']}")
+            audio_codec_args = ['-c:a', 'aac', '-b:a', quality_config['audio_bitrate']]
+    else:
+        print(f"  Audio: Re-encoding to AAC @ {quality_config['audio_bitrate']}")
+        audio_codec_args = ['-c:a', 'aac', '-b:a', quality_config['audio_bitrate']]
+
+    # Build optimized ffmpeg command
     cmd = [
         ffmpeg_path,
         '-i', str(input_file),
-        '-c:v', 'libx264',
-        '-crf', quality_config['crf'],
-        '-preset', quality_config['preset'],
         '-threads', '0',                 # Use all available CPU cores
-        '-c:a', 'aac',
-        '-b:a', quality_config['audio_bitrate'],
+    ]
+
+    # Add video encoding args
+    cmd.extend(video_codec_args)
+
+    # Add audio encoding args
+    cmd.extend(audio_codec_args)
+
+    # Add common flags
+    cmd.extend([
         '-map_metadata', '0',            # Copy all metadata
         '-movflags', '+faststart',       # Optimize for streaming
         '-avoid_negative_ts', 'make_zero', # Fix timestamp issues
         '-fflags', '+genpts',            # Generate presentation timestamps
         '-y', str(output_file)
-    ]
+    ])
 
     try:
         print(f"Converting {input_file.name} to {output_file.name}...")
@@ -479,7 +653,9 @@ def convert_all_mov_files():
     print(f"Found {len(target_files)} files to convert")
     print(f"Source folder: {input_folder}")
     print(f"Destination folder: {output_folder}")
-    print(f"Quality level: {QUALITY_LEVEL}")
+    print(f"Quality level: {QUALITY_LEVEL} (preset: {QUALITY_SETTINGS[QUALITY_LEVEL]['preset']}, CRF: {QUALITY_SETTINGS[QUALITY_LEVEL]['crf']})")
+    print(f"Max bitrate: {QUALITY_SETTINGS[QUALITY_LEVEL]['max_video_bitrate']}")
+    print(f"Target codec: {'H.265/HEVC' if USE_HEVC else 'H.264'}")
     print(f"File extensions: {FILE_EXTENSIONS}")
     print()
 
@@ -546,18 +722,23 @@ def main():
         print("Metadata preservation may be limited")
         print()
 
-    print("MOV to MP4 Converter with Size Reduction")
-    print("==========================================")
+    print("MOV to MP4 Converter with Intelligent Compression")
+    print("==================================================")
     print("Configuration:")
     print(f"  Source path: {SOURCE_PATH}")
     print(f"  Destination path: {DESTINATION_PATH}")
     print(f"  File extensions: {FILE_EXTENSIONS}")
     print(f"  Quality level: {QUALITY_LEVEL}")
+    print(f"  Encoding preset: {QUALITY_SETTINGS[QUALITY_LEVEL]['preset']}")
+    print(f"  Max bitrate: {QUALITY_SETTINGS[QUALITY_LEVEL]['max_video_bitrate']}")
+    print(f"  Use HEVC (H.265): {'Yes' if USE_HEVC else 'No (H.264)'}")
     print("\nFeatures:")
-    print("- Reduces file size while maintaining quality")
+    print("- Intelligent codec detection (skips re-encoding if already optimal)")
+    print("- Reduces file size with better compression settings")
+    print("- Bitrate limits to prevent excessive file sizes")
     print("- Preserves all metadata (dates, location, etc.)")
     print("- Creates backups by copying originals to output folder")
-    print("- Shows conversion progress")
+    print("- Shows detailed conversion progress")
     print("- Compares metadata between source and target")
     print()
 
